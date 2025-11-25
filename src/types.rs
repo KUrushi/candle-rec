@@ -15,3 +15,11 @@ pub struct Interaction {
     pub timestamp: usize,
     pub rating: f32,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Movie {
+    #[serde(rename = "movieId")]
+    pub item_id: String ,
+    pub title: String,
+    pub genres: String
+}

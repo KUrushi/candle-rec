@@ -6,24 +6,31 @@ use crate::types::Interaction;
 #[derive(Debug)]
 pub struct IdEncoder {
     map: HashMap<String, usize>,
+    reverse_map: HashMap<usize, String>
 }
 
 impl IdEncoder {
     /// 文字列のリスト(イテレータ)を受け取ってマッピングを作る
     pub fn new<'a>(ids: impl Iterator<Item=&'a String>) -> Self {
         let mut map = HashMap::new();
+        let mut reverse_map = HashMap::new();
         let mut count = 0;
         for id in ids {
             if !map.contains_key(id) {
                 map.insert(id.clone(), count);
+                reverse_map.insert(count, id.clone());
                 count += 1;
             }
         }
-        Self { map }
+        Self { map, reverse_map }
     }
 
     pub fn encode(&self, id: &str) -> Option<usize> {
         self.map.get(id).copied()
+    }
+
+    pub fn decode(&self, idx: usize) -> Option<&str> {
+        self.reverse_map.get(&idx).map(|s| s.as_str())
     }
 
     pub fn len(&self) -> usize {
