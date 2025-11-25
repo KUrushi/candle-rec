@@ -9,7 +9,7 @@ pub trait Recommender {
 pub struct RandomRecommender;
 
 impl Recommender for RandomRecommender {
-    fn recommend(&self, user_id: String) -> Result<Vec<Candidate>, Error> {
+    fn recommend(&self, _user_id: String) -> Result<Vec<Candidate>, Error> {
         Ok(vec![Candidate {
             item_id: "1".to_string(),
             score: 0.1
@@ -24,7 +24,7 @@ pub struct MostPopularRecommender {
 }
 
 impl Recommender for MostPopularRecommender {
-    fn recommend(&self, user_id: String) -> Result<Vec<Candidate>, Error> {
+    fn recommend(&self, _user_id: String) -> Result<Vec<Candidate>, Error> {
         let mut counter: HashMap<String, usize> = HashMap::new();
         for interaction in &self.interactions {
             *counter.entry(interaction.item_id.clone()).or_insert(0) += 1;
@@ -53,16 +53,19 @@ mod tests {
                     user_id:"1".to_string(),
                     item_id:"1".to_string(),
                     timestamp:0,
+                    rating:1.0,
                 },
                 Interaction{
                     user_id:"1".to_string(),
                     item_id:"1".to_string(),
                     timestamp:0,
+                    rating:1.0,
                 },
                 Interaction{
                     user_id:"1".to_string(),
                     item_id:"2".to_string(),
                     timestamp:0,
+                    rating:1.0,
                 },
             ]
         };
