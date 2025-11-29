@@ -1,11 +1,11 @@
-use std::collections::HashMap;
-use candle_nn::VarBuilder;
-use qdrant_client::Qdrant;
-use serde::{Deserialize, Serialize};
 use crate::bert::BertEncoder;
 use crate::cf_model::CollaborativeFilteringModel;
 use crate::datasets::IdEncoder;
 use crate::read_movie;
+use candle_nn::VarBuilder;
+use qdrant_client::Qdrant;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub struct AppState {
     pub ranking_model: std::sync::Arc<CollaborativeFilteringModel>,
@@ -13,7 +13,7 @@ pub struct AppState {
     pub qdrant_client: std::sync::Arc<Qdrant>,
     pub user_encoder: std::sync::Arc<IdEncoder>,
     pub item_encoder: std::sync::Arc<IdEncoder>,
-    pub id2title: std::sync::Arc<HashMap<String,String>>,
+    pub id2title: std::sync::Arc<HashMap<String, String>>,
 }
 
 impl AppState {
@@ -24,20 +24,20 @@ impl AppState {
         let id2title = read_movie(&arg.movies_path).expect("Movieファイルを読み込めませんでした");
 
         let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&["model.safetensors"], candle_core::DType::F32, device)?
+            VarBuilder::from_mmaped_safetensors(
+                &["model.safetensors"],
+                candle_core::DType::F32,
+                device,
+            )?
         };
 
-        let model = CollaborativeFilteringModel::new(
-            vb,
-            user_encoder.len(),
-            item_encoder.len(),
-            32
-        )?;
+        let model =
+            CollaborativeFilteringModel::new(vb, user_encoder.len(), item_encoder.len(), 32)?;
 
         let bert = BertEncoder::new(device)?;
         let qdrant_client = Qdrant::from_url(&arg.qdrant_url).build()?;
 
-        Ok(AppState{
+        Ok(AppState {
             ranking_model: std::sync::Arc::new(model),
             embedding_model: std::sync::Arc::new(bert),
             qdrant_client: std::sync::Arc::new(qdrant_client),
@@ -51,12 +51,12 @@ impl AppState {
 pub struct RecommendQuery {
     pub user_id: String,
     pub query: String,
-    pub limit: usize
+    pub limit: usize,
 }
 
 #[derive(Serialize)]
 pub struct RecommendationResult {
     pub score: f64,
     pub title: String,
-    pub item_id: String
+    pub item_id: String,
 }

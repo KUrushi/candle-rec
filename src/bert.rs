@@ -1,8 +1,8 @@
 use anyhow::Result;
 use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
-use hf_hub::{api::sync::Api, Repo, RepoType};
 use candle_transformers::models::bert::{BertModel, Config};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 
 pub struct BertEncoder {
     pub model: BertModel,
@@ -19,34 +19,38 @@ impl BertEncoder {
         let config: Config = serde_json::from_str(config_text.as_str())?;
 
         let tokenizer_filename = api.get("tokenizer.json")?;
-        let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_filename).expect("tokenizerを読み込めませんでした");
+        let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_filename)
+            .expect("tokenizerを読み込めませんでした");
         let weight_filename = api.get("model.safetensors")?;
         let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[weight_filename], candle_core::DType::F32, device)?
+            VarBuilder::from_mmaped_safetensors(
+                &[weight_filename],
+                candle_core::DType::F32,
+                device,
+            )?
         };
         let model = BertModel::load(vb, &config)?;
 
-        Ok(Self {
-            model,
-            tokenizer,
-        })
+        Ok(Self { model, tokenizer })
     }
 
     pub fn encode(&self, sentences: Vec<String>) -> Result<candle_core::Tensor> {
         let n_sentences = sentences.len();
-        let tokens = self.tokenizer
+        let tokens = self
+            .tokenizer
             .encode_batch(sentences, true)
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        let token_ids: Vec<u32> = tokens.iter()
-            .flat_map(|t| t.get_ids())
-            .copied()
-            .collect();
+        let token_ids: Vec<u32> = tokens.iter().flat_map(|t| t.get_ids()).copied().collect();
 
         // 系列長を計算 (前トークン数 / 文の数)
         let seq_len = token_ids.len() / n_sentences;
         let input_ids = Tensor::from_vec(token_ids, (n_sentences, seq_len), &self.model.device)?;
-        let token_type_ids = Tensor::zeros(input_ids.shape(), candle_core::DType::U32, &self.model.device)?;
+        let token_type_ids = Tensor::zeros(
+            input_ids.shape(),
+            candle_core::DType::U32,
+            &self.model.device,
+        )?;
 
         // (batch, seq_len, token_embedding_dim)
         let encoding = self.model.forward(&input_ids, &token_type_ids, None)?;
@@ -57,8 +61,8 @@ impl BertEncoder {
 
 #[cfg(test)]
 mod tests {
-    use candle_core::Device;
     use super::*;
+    use candle_core::Device;
 
     #[test]
     fn test_embedding_shape() -> anyhow::Result<()> {

@@ -1,8 +1,7 @@
-use candle_core::{Tensor, Result};
+use candle_core::{Result, Tensor};
 fn mse(labels: &Tensor, predictions: &Tensor) -> Result<Tensor> {
-    (labels-predictions)?.sqr()?.mean_all()
+    (labels - predictions)?.sqr()?.mean_all()
 }
-
 
 #[cfg(test)]
 mod tests {

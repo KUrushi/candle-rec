@@ -1,6 +1,6 @@
-use std::io::Error;
-use std::collections::HashMap;
 use crate::types::{Candidate, Interaction};
+use std::collections::HashMap;
+use std::io::Error;
 
 pub trait Recommender {
     fn recommend(&self, user_id: String) -> Result<Vec<Candidate>, std::io::Error>;
@@ -10,12 +10,20 @@ pub struct RandomRecommender;
 
 impl Recommender for RandomRecommender {
     fn recommend(&self, _user_id: String) -> Result<Vec<Candidate>, Error> {
-        Ok(vec![Candidate {
-            item_id: "1".to_string(),
-            score: 0.1
-        },
-                Candidate { item_id: "2".to_string(), score: 0.2 },
-                Candidate { item_id: "3".to_string(), score: 0.3 }])
+        Ok(vec![
+            Candidate {
+                item_id: "1".to_string(),
+                score: 0.1,
+            },
+            Candidate {
+                item_id: "2".to_string(),
+                score: 0.2,
+            },
+            Candidate {
+                item_id: "3".to_string(),
+                score: 0.3,
+            },
+        ])
     }
 }
 
@@ -47,27 +55,27 @@ mod tests {
     use super::*;
     #[test]
     fn test_ranking_recommender() {
-        let recommender = MostPopularRecommender{
+        let recommender = MostPopularRecommender {
             interactions: vec![
-                Interaction{
-                    user_id:"1".to_string(),
-                    item_id:"1".to_string(),
-                    timestamp:0,
-                    rating:1.0,
+                Interaction {
+                    user_id: "1".to_string(),
+                    item_id: "1".to_string(),
+                    timestamp: 0,
+                    rating: 1.0,
                 },
-                Interaction{
-                    user_id:"1".to_string(),
-                    item_id:"1".to_string(),
-                    timestamp:0,
-                    rating:1.0,
+                Interaction {
+                    user_id: "1".to_string(),
+                    item_id: "1".to_string(),
+                    timestamp: 0,
+                    rating: 1.0,
                 },
-                Interaction{
-                    user_id:"1".to_string(),
-                    item_id:"2".to_string(),
-                    timestamp:0,
-                    rating:1.0,
+                Interaction {
+                    user_id: "1".to_string(),
+                    item_id: "2".to_string(),
+                    timestamp: 0,
+                    rating: 1.0,
                 },
-            ]
+            ],
         };
         let actual = recommender.recommend("1".to_string()).unwrap();
         let actual: Vec<String> = actual.iter().map(|x| x.item_id.clone()).collect();

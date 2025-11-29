@@ -1,20 +1,24 @@
-use std::collections::HashMap;
-use qdrant_client::Payload;
 use anyhow::Result;
 use candle_core::Tensor;
-use qdrant_client::Qdrant; // Clientの名前が変わっている場合があるので注意
+use qdrant_client::Payload;
+use qdrant_client::Qdrant;
+use std::collections::HashMap; // Clientの名前が変わっている場合があるので注意
 // もし qdrant-client 1.16系なら Qdrant ではなく QdrantClient かもしれません。
 // エラーが出なければそのままでOKです。
-use qdrant_client::qdrant::vectors_config::Config;
-use qdrant_client::qdrant::{CreateCollection, Distance, PointStruct, UpsertPointsBuilder, VectorParams, VectorsConfig, SearchPointsBuilder, ScoredPoint};
-use serde_json::json;
 use crate::datasets::IdEncoder;
+use qdrant_client::qdrant::vectors_config::Config;
+use qdrant_client::qdrant::{
+    CreateCollection, Distance, PointStruct, ScoredPoint, SearchPointsBuilder, UpsertPointsBuilder,
+    VectorParams, VectorsConfig,
+};
+use serde_json::json;
 
 pub const COLLECTION_NAME: &str = "movies";
 
 pub async fn init_qdrant(url: &str) -> Result<Qdrant> {
-
-    let client = Qdrant::from_url(url).build().expect("Qdrant was not created");
+    let client = Qdrant::from_url(url)
+        .build()
+        .expect("Qdrant was not created");
 
     if client.collection_exists(COLLECTION_NAME).await? {
         println!("Collection '{}' exists. Deleting...", COLLECTION_NAME);
@@ -24,8 +28,8 @@ pub async fn init_qdrant(url: &str) -> Result<Qdrant> {
     println!("Creating collection '{}'...", COLLECTION_NAME);
 
     // 【修正点】 & を削除しました
-    let result = client.create_collection(
-        CreateCollection {
+    let result = client
+        .create_collection(CreateCollection {
             collection_name: COLLECTION_NAME.to_string(),
             vectors_config: Some(VectorsConfig {
                 config: Some(Config::Params(VectorParams {
@@ -36,8 +40,8 @@ pub async fn init_qdrant(url: &str) -> Result<Qdrant> {
                 })),
             }),
             ..Default::default()
-        }
-    ).await?; // unwrap() ではなく ? を使うとエラーハンドリングが綺麗になります
+        })
+        .await?; // unwrap() ではなく ? を使うとエラーハンドリングが綺麗になります
 
     Ok(client)
 }
@@ -46,7 +50,7 @@ pub async fn upsert_movies(
     client: &Qdrant,
     item_encoder: &IdEncoder,
     id2title: &HashMap<String, String>,
-    embeddings: &Tensor
+    embeddings: &Tensor,
 ) -> Result<()> {
     let n_items = item_encoder.len();
     let mut points = Vec::new();
@@ -57,28 +61,24 @@ pub async fn upsert_movies(
 
     for i in 0..n_items {
         let item_id_str = item_encoder.decode(i).unwrap_or("Unknown");
-        let title = id2title.get(item_id_str).cloned().unwrap_or_else(|| "Unknown".to_string());
-        let payload = Payload::try_from(
-            json!({
-                "oritinal_id": item_id_str,
-                "title":title
-            })
-        )?;
+        let title = id2title
+            .get(item_id_str)
+            .cloned()
+            .unwrap_or_else(|| "Unknown".to_string());
+        let payload = Payload::try_from(json!({
+            "oritinal_id": item_id_str,
+            "title":title
+        }))?;
 
-        let point = PointStruct::new(
-            i as u64,
-            vectors[i].clone(),
-            payload
-        );
+        let point = PointStruct::new(i as u64, vectors[i].clone(), payload);
 
         points.push(point)
     }
 
     println!("Uploading points to Qdrant...");
-    client.upsert_points(UpsertPointsBuilder::new(
-        COLLECTION_NAME,
-        points
-    ).wait(true)).await?;
+    client
+        .upsert_points(UpsertPointsBuilder::new(COLLECTION_NAME, points).wait(true))
+        .await?;
 
     Ok(())
 }
@@ -86,24 +86,28 @@ pub async fn upsert_movies(
 pub async fn search_movies(
     client: &Qdrant,
     query_vector: Vec<f32>,
-    limit: u64
+    limit: u64,
 ) -> Result<Vec<ScoredPoint>> {
     println!("Searching ...");
 
-    let search_result = client.search_points(
-        SearchPointsBuilder::new(COLLECTION_NAME, query_vector, limit)
-            .with_payload(true)
-    ).await.unwrap();
+    let search_result = client
+        .search_points(
+            SearchPointsBuilder::new(COLLECTION_NAME, query_vector, limit).with_payload(true),
+        )
+        .await
+        .unwrap();
 
     println!("Found {} results:", search_result.result.len());
 
     let result = search_result.result;
     for point in result.iter() {
-        let title = point.payload.get("title")
+        let title = point
+            .payload
+            .get("title")
             .and_then(|v| v.kind.as_ref())
             .and_then(|k| match k {
                 qdrant_client::qdrant::value::Kind::StringValue(s) => Some(s.as_str()),
-                _ => None
+                _ => None,
             })
             .unwrap_or("Unknown Title");
 

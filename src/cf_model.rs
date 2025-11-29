@@ -1,5 +1,5 @@
-use candle_nn::{embedding, Embedding, VarBuilder};
-use candle_core::{Tensor, Result, Module, Device};
+use candle_core::{Device, Module, Result, Tensor};
+use candle_nn::{Embedding, VarBuilder, embedding};
 
 pub struct CollaborativeFilteringModel {
     user_embeddings: Embedding,
@@ -38,32 +38,44 @@ impl CollaborativeFilteringModel {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
-    use candle_core::{DType, Device};
-    use candle_nn::{embedding, VarMap};
     use super::*;
+    use candle_core::{DType, Device};
+    use candle_nn::{VarMap, embedding};
+    use std::collections::HashMap;
 
     const N_USERS: usize = 10;
     const N_ITEMS: usize = 5;
     const DIM: usize = 32;
     #[test]
     fn test_build_model() -> Result<()> {
-        let varmap = VarMap::new() ;
+        let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &Device::Cpu);
 
-        let _model = CollaborativeFilteringModel::new(
-            vb, N_USERS, N_ITEMS, DIM
-        )?;
+        let _model = CollaborativeFilteringModel::new(vb, N_USERS, N_ITEMS, DIM)?;
 
         let v_data = varmap.data().lock().unwrap();
-        assert!(v_data.contains_key("user_emb.weight"), "user_emb.weightが見つかりません");
-        assert!(v_data.contains_key("item_emb.weight"), "item_emb.weightが見つかりません");
+        assert!(
+            v_data.contains_key("user_emb.weight"),
+            "user_emb.weightが見つかりません"
+        );
+        assert!(
+            v_data.contains_key("item_emb.weight"),
+            "item_emb.weightが見つかりません"
+        );
 
         let user_w = v_data.get("user_emb.weight").unwrap();
-        assert_eq!(user_w.dims(), &[N_USERS, DIM], "ユーザー埋め込みの形状が正しくありません");
+        assert_eq!(
+            user_w.dims(),
+            &[N_USERS, DIM],
+            "ユーザー埋め込みの形状が正しくありません"
+        );
 
         let item_w = v_data.get("item_emb.weight").unwrap();
-        assert_eq!(item_w.dims(), &[N_ITEMS, DIM], "アイテム埋め込みの形状が正しくありません");
+        assert_eq!(
+            item_w.dims(),
+            &[N_ITEMS, DIM],
+            "アイテム埋め込みの形状が正しくありません"
+        );
         Ok(())
     }
 
@@ -71,7 +83,7 @@ mod test {
     fn test_forward_pass() -> Result<()> {
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &Device::Cpu);
-        let model = CollaborativeFilteringModel::new(vb,N_USERS, N_ITEMS,DIM)?;
+        let model = CollaborativeFilteringModel::new(vb, N_USERS, N_ITEMS, DIM)?;
         let user_ids = Tensor::new(&[0u32, 1, 9], &Device::Cpu)?;
         let item_ids = Tensor::new(&[0u32, 4, 2], &Device::Cpu)?;
 
@@ -80,29 +92,20 @@ mod test {
         assert_eq!(output.dims(), &[3], "出力の形状が違います");
         println!("Output values: {:?}", output.to_vec1::<f32>()?);
         Ok(())
-
     }
     #[test]
     fn test_forward_with_specific_embeddings() -> Result<()> {
         let device = Device::Cpu;
 
-        let user_weights = Tensor::from_slice(
-            &[1.0f32, 1.0, 2.0, 0.0],
-            (2,2),
-            &device
-        )?;
+        let user_weights = Tensor::from_slice(&[1.0f32, 1.0, 2.0, 0.0], (2, 2), &device)?;
 
-        let item_weights = Tensor::from_slice(
-            &[0.5, 2.0, 3.0, 3.0],
-            (2,2),
-            &device
-        )?;
+        let item_weights = Tensor::from_slice(&[0.5, 2.0, 3.0, 3.0], (2, 2), &device)?;
         let mut tensors = HashMap::new();
         tensors.insert("user_emb.weight".to_string(), user_weights);
         tensors.insert("item_emb.weight".to_string(), item_weights);
         let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
 
-        let model = CollaborativeFilteringModel::new(vb, 2,2,2)?;
+        let model = CollaborativeFilteringModel::new(vb, 2, 2, 2)?;
         let user_input = Tensor::new(&[0u32, 1u32], &device)?;
         let item_input = Tensor::new(&[0u32, 1u32], &device)?;
 
@@ -111,5 +114,4 @@ mod test {
         assert_eq!(result_scalar, vec![2.5, 6.0]);
         Ok(())
     }
-
 }

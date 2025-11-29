@@ -1,19 +1,19 @@
+use crate::types::Interaction;
+use candle_core::{Device, Tensor};
 use rand::seq::SliceRandom;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use candle_core::{Tensor, Device};
-use serde::{Serialize, Deserialize};
-use crate::types::Interaction;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IdEncoder {
     map: HashMap<String, usize>,
-    reverse_map: HashMap<usize, String>
+    reverse_map: HashMap<usize, String>,
 }
 
 impl IdEncoder {
     /// 文字列のリスト(イテレータ)を受け取ってマッピングを作る
-    pub fn new<'a>(ids: impl Iterator<Item=&'a String>) -> Self {
+    pub fn new<'a>(ids: impl Iterator<Item = &'a String>) -> Self {
         let mut map = HashMap::new();
         let mut reverse_map = HashMap::new();
         let mut count = 0;
@@ -58,7 +58,7 @@ pub struct TensorDataset {
     pub user_ids: Tensor,
     pub item_ids: Tensor,
     pub ratings: Tensor,
-    pub len: usize
+    pub len: usize,
 }
 
 impl TensorDataset {
@@ -73,7 +73,10 @@ impl TensorDataset {
         let mut rates = Vec::new();
 
         for action in interactions {
-            if let (Some(u), Some(i)) = (user_encoder.encode(&action.user_id), item_encoder.encode(&action.item_id)) {
+            if let (Some(u), Some(i)) = (
+                user_encoder.encode(&action.user_id),
+                item_encoder.encode(&action.item_id),
+            ) {
                 u_ids.push(u as u32);
                 i_ids.push(i as u32);
                 rates.push(action.rating);
@@ -85,7 +88,7 @@ impl TensorDataset {
             user_ids: Tensor::new(u_ids, device)?,
             item_ids: Tensor::new(i_ids, device)?,
             ratings: Tensor::new(rates, device)?,
-            len
+            len,
         })
     }
 }
@@ -94,7 +97,7 @@ pub struct DataLoader {
     dataset: TensorDataset,
     batch_size: usize,
     current_index: usize,
-    shuffled_indices: Vec<usize>
+    shuffled_indices: Vec<usize>,
 }
 impl DataLoader {
     pub fn new(dataset: TensorDataset, batch_size: usize) -> Self {
@@ -106,7 +109,7 @@ impl DataLoader {
             dataset,
             batch_size,
             current_index: 0usize,
-            shuffled_indices
+            shuffled_indices,
         }
     }
 }
@@ -131,21 +134,37 @@ impl Iterator for DataLoader {
         let batch_indices_u32: Vec<u32> = batch_indices_vec.iter().map(|&x| x as u32).collect();
 
         let device = self.dataset.user_ids.device();
-        let indices_tensor = Tensor::new(&*batch_indices_u32, device).expect("ランダムなインデックスの取得に失敗しました");
+        let indices_tensor = Tensor::new(&*batch_indices_u32, device)
+            .expect("ランダムなインデックスの取得に失敗しました");
 
         // 5. index_selectでデータを抽出
-        let users = self.dataset.user_ids.index_select(&indices_tensor,0).expect("user_idsの取得に失敗");
-        let items = self.dataset.item_ids.index_select(&indices_tensor, 0).expect("item_idsの取得に失敗");
-        let ratings = self.dataset.ratings.index_select(&indices_tensor, 0).expect("ratingsの取得に失敗");
+        let users = self
+            .dataset
+            .user_ids
+            .index_select(&indices_tensor, 0)
+            .expect("user_idsの取得に失敗");
+        let items = self
+            .dataset
+            .item_ids
+            .index_select(&indices_tensor, 0)
+            .expect("item_idsの取得に失敗");
+        let ratings = self
+            .dataset
+            .ratings
+            .index_select(&indices_tensor, 0)
+            .expect("ratingsの取得に失敗");
 
         self.current_index += size;
 
         Some((users, items, ratings))
     }
 }
-pub fn split_data(mut data: Vec<Interaction>, split_rate: f32) -> (Vec<Interaction>, Vec<Interaction>) {
+pub fn split_data(
+    mut data: Vec<Interaction>,
+    split_rate: f32,
+) -> (Vec<Interaction>, Vec<Interaction>) {
     data.sort_by_key(|x| x.timestamp);
-    let split_index = ( data.len() as f32 * split_rate) as usize;
+    let split_index = (data.len() as f32 * split_rate) as usize;
     let test_data = data.split_off(split_index);
     (data, test_data)
 }
@@ -183,7 +202,7 @@ mod tests {
         let mut total_count = 0;
         let mut batch_count = 0;
 
-        for (u,i,r) in loader {
+        for (u, i, r) in loader {
             let current_batch_size = u.dims()[0];
 
             assert_eq!(u.dims()[0], i.dims()[0]);
@@ -193,7 +212,6 @@ mod tests {
                 assert_eq!(current_batch_size, batch_size)
             } else {
                 assert_eq!(current_batch_size, 1)
-
             }
             total_count += current_batch_size;
             batch_count += 1;
@@ -213,11 +231,9 @@ mod tests {
             let u_vec = batch_users.to_vec1::<u32>().unwrap();
             let i_vec = batch_items.to_vec1::<u32>().unwrap();
 
-            for (u, i)in u_vec.iter().zip(i_vec.iter()) {
-                assert_eq!(*i, u*10, "シャッフルでデータの対応関係が壊れています!");
+            for (u, i) in u_vec.iter().zip(i_vec.iter()) {
+                assert_eq!(*i, u * 10, "シャッフルでデータの対応関係が壊れています!");
             }
         }
     }
-
-
 }

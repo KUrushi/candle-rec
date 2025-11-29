@@ -1,44 +1,48 @@
-use std::collections::HashMap;
-use axum::response::{IntoResponse, Json, Response};
-use axum::{extract::{State, Query}};
-use axum::{routing::get, Router};
-use std::path::PathBuf;
-use std::sync::Arc;
+use crate::bert::BertEncoder;
+use crate::cf_model::CollaborativeFilteringModel;
+use crate::datasets::{DataLoader, IdEncoder, TensorDataset, split_data};
+use crate::server::{AppState, RecommendQuery, RecommendationResult};
+use crate::types::Movie;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use clap::{Parser, Subcommand};
+use axum::response::{IntoResponse, Json, Response};
+use axum::{Router, routing::get};
 use candle_core::{DType, Device, Module, Tensor};
-use types::Interaction;
-use candle_nn::{VarBuilder, VarMap, SGD, Optimizer};
 use candle_nn::loss::mse;
+use candle_nn::{Optimizer, SGD, VarBuilder, VarMap};
+use clap::{Parser, Subcommand};
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::ScoredPoint;
 use serde::Deserialize;
-use crate::bert::BertEncoder;
-use crate::cf_model::CollaborativeFilteringModel;
-use crate::datasets::{split_data, DataLoader, IdEncoder, TensorDataset};
-use crate::server::{AppState, RecommendQuery, RecommendationResult};
-use crate::types::Movie;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use types::Interaction;
 
-mod types;
-mod recommenders;
-mod metrics;
-mod cf_model;
-mod loss;
-mod datasets;
 mod bert;
+mod cf_model;
+mod datasets;
+mod loss;
+mod metrics;
+mod recommenders;
+mod types;
 
-mod vector_store;
 mod server;
+mod vector_store;
 
 fn read_interactions(path: &str) -> Result<Vec<Interaction>, Box<dyn std::error::Error>> {
-    let mut data = csv::Reader::from_path(PathBuf::from(path)).expect("ファイルパスが開けませんでした");
-    let data = data.deserialize().map(|x|
-        x.expect("行をパースできませんでした")).collect::<Vec<Interaction>>();
+    let mut data =
+        csv::Reader::from_path(PathBuf::from(path)).expect("ファイルパスが開けませんでした");
+    let data = data
+        .deserialize()
+        .map(|x| x.expect("行をパースできませんでした"))
+        .collect::<Vec<Interaction>>();
     Ok(data)
 }
 
 fn read_movie(path: &str) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
-    let mut data = csv::Reader::from_path(PathBuf::from(path)).expect("ファイルパスが開けませんでした");
+    let mut data =
+        csv::Reader::from_path(PathBuf::from(path)).expect("ファイルパスが開けませんでした");
     let mut mapper = HashMap::new();
     for result in data.deserialize() {
         let record: Movie = result?;
@@ -59,7 +63,8 @@ fn precompute_embeddings(
     let mut titles = Vec::new();
     for i in 0..n_items {
         let item_id = item_encoder.decode(i).unwrap_or("Unknown");
-        let title = id2title.get(item_id)
+        let title = id2title
+            .get(item_id)
             .cloned()
             .unwrap_or_else(|| "Unknown".to_string());
         titles.push(title.clone());
@@ -90,7 +95,11 @@ async fn load_movies() -> anyhow::Result<()> {
     let user_encoder = IdEncoder::new(train_data.iter().map(|x| &x.user_id));
     let item_encoder = IdEncoder::new(train_data.iter().map(|x| &x.item_id));
 
-    println!("Users: {}, Items: {}", user_encoder.len(), item_encoder.len());
+    println!(
+        "Users: {}, Items: {}",
+        user_encoder.len(),
+        item_encoder.len()
+    );
 
     // Datasetの作成
     let train_dataset = TensorDataset::new(&train_data, &user_encoder, &item_encoder, &device)?;
@@ -102,13 +111,9 @@ async fn load_movies() -> anyhow::Result<()> {
     let bert = BertEncoder::new(&device)?;
 
     println!("Generating embeddings for {} movies...", item_encoder.len());
-    let id2title = read_movie("data/movielens_small/movies.csv").expect("Movieファイルを読み込めませんでした");
-    let item_embeddings = precompute_embeddings(
-        &item_encoder,
-        &id2title,
-        &bert,
-        32,
-    )?;
+    let id2title =
+        read_movie("data/movielens_small/movies.csv").expect("Movieファイルを読み込めませんでした");
+    let item_embeddings = precompute_embeddings(&item_encoder, &id2title, &bert, 32)?;
     println!("Embedding shape: {:?}", item_embeddings.shape());
 
     println!("--- Vector Search with Qdrant ---");
@@ -116,12 +121,7 @@ async fn load_movies() -> anyhow::Result<()> {
     let qdrant_url = "http://localhost:6334";
     let qdrant_client = vector_store::init_qdrant(qdrant_url).await?;
 
-    vector_store::upsert_movies(
-        &qdrant_client,
-        &item_encoder,
-        &id2title,
-        &item_embeddings,
-    ).await?;
+    vector_store::upsert_movies(&qdrant_client, &item_encoder, &id2title, &item_embeddings).await?;
     Ok(())
 }
 
@@ -135,12 +135,15 @@ async fn search_movie(limit: u32, query_text: &str) -> anyhow::Result<Vec<Scored
     let all_interactions = read_interactions(path).expect("データが読めませんでした");
     println!("Total interactions: {}", all_interactions.len());
 
-
     // Encoderの作成 (学習データに含まれるIDのみを知っている状態にする)
     let user_encoder = IdEncoder::new(all_interactions.iter().map(|x| &x.user_id));
     let item_encoder = IdEncoder::new(all_interactions.iter().map(|x| &x.item_id));
 
-    println!("Users: {}, Items: {}", user_encoder.len(), item_encoder.len());
+    println!(
+        "Users: {}, Items: {}",
+        user_encoder.len(),
+        item_encoder.len()
+    );
 
     println!("Loading BERT model...");
     let bert = BertEncoder::new(&device)?;
@@ -152,7 +155,9 @@ async fn search_movie(limit: u32, query_text: &str) -> anyhow::Result<Vec<Scored
     let query_vector = query_embedding.to_vec2::<f32>()?[0].clone();
 
     let qdrant_url = "http://localhost:6334";
-    let qdrant_client = Qdrant::from_url(qdrant_url).build().expect("Failed to create Qdrant client");
+    let qdrant_client = Qdrant::from_url(qdrant_url)
+        .build()
+        .expect("Failed to create Qdrant client");
     let result = vector_store::search_movies(&qdrant_client, query_vector, 100).await?;
     Ok(result)
 }
@@ -195,7 +200,7 @@ enum Commands {
     /// キーワードで映画を検索
     Search {
         #[arg(short, long)]
-        query: String
+        query: String,
     },
     Server,
 }
@@ -209,7 +214,10 @@ struct TrainingConfig {
     pub lambda_: f64,
 }
 
-fn prepare_data(rating_path: &str, device: &Device) -> anyhow::Result<(TensorDataset, TensorDataset, IdEncoder, IdEncoder)> {
+fn prepare_data(
+    rating_path: &str,
+    device: &Device,
+) -> anyhow::Result<(TensorDataset, TensorDataset, IdEncoder, IdEncoder)> {
     println!("Loading data from {rating_path}");
 
     let all_interactions = read_interactions(rating_path).expect("データが読めませんでした");
@@ -222,14 +230,19 @@ fn prepare_data(rating_path: &str, device: &Device) -> anyhow::Result<(TensorDat
     let user_encoder = IdEncoder::new(train_data.iter().map(|x| &x.user_id));
     let item_encoder = IdEncoder::new(train_data.iter().map(|x| &x.item_id));
 
-
     let train_dataset = TensorDataset::new(&train_data, &user_encoder, &item_encoder, &device)?;
     let test_dataset = TensorDataset::new(&test_data, &user_encoder, &item_encoder, &device)?;
     Ok((train_dataset, test_dataset, user_encoder, item_encoder))
 }
 
-fn train_model(config: &TrainingConfig, train_dataset: &TensorDataset, test_dataset: &TensorDataset, user_encoder: &IdEncoder,
-               item_encoder: &IdEncoder, device: &Device) -> anyhow::Result<CollaborativeFilteringModel> {
+fn train_model(
+    config: &TrainingConfig,
+    train_dataset: &TensorDataset,
+    test_dataset: &TensorDataset,
+    user_encoder: &IdEncoder,
+    item_encoder: &IdEncoder,
+    device: &Device,
+) -> anyhow::Result<CollaborativeFilteringModel> {
     let varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, candle_core::DType::F32, &device);
 
@@ -243,7 +256,6 @@ fn train_model(config: &TrainingConfig, train_dataset: &TensorDataset, test_data
     let mut opt = SGD::new(varmap.all_vars(), config.learning_rate)?;
 
     println!("Start training...");
-
 
     for epoch in 1..=config.epochs {
         let mut total_train_loss = 0.0;
@@ -284,14 +296,16 @@ fn train_model(config: &TrainingConfig, train_dataset: &TensorDataset, test_data
             epoch, avg_train_loss, avg_test_loss,
         );
     }
-    varmap.save("model.safetensors").expect("重みの保存に失敗しました");
+    varmap
+        .save("model.safetensors")
+        .expect("重みの保存に失敗しました");
     user_encoder.save("user_encoder.json")?;
     item_encoder.save("item_encoder.json")?;
     Ok(model)
 }
 #[derive(Debug)]
 pub enum AppError {
-    Anyhow(anyhow::Error)
+    Anyhow(anyhow::Error),
 }
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
@@ -315,7 +329,7 @@ async fn hybrid_recommendation(
     State(state): State<Arc<AppState>>,
     Query(query): Query<RecommendQuery>,
 ) -> std::result::Result<Json<Vec<RecommendationResult>>, AppError> {
-    let item_encoder  = &state.item_encoder;
+    let item_encoder = &state.item_encoder;
     let user_encoder = &state.user_encoder;
 
     let id2title = &state.id2title;
@@ -329,22 +343,30 @@ async fn hybrid_recommendation(
 
     let query_vector = query_embedding.to_vec2::<f32>()?[0].clone();
 
-    let candidates = vector_store::search_movies(
-        qdrant_client, query_vector, query.limit as u64,
-    ).await?;
+    let candidates =
+        vector_store::search_movies(qdrant_client, query_vector, query.limit as u64).await?;
 
     // 候補の内部IDを抽出 (U32)
-    let candidate_ids: Vec<u32> = candidates.iter()
+    let candidate_ids: Vec<u32> = candidates
+        .iter()
         .map(|point| {
-            match point.id.as_ref().unwrap().point_id_options.as_ref().unwrap() {
+            match point
+                .id
+                .as_ref()
+                .unwrap()
+                .point_id_options
+                .as_ref()
+                .unwrap()
+            {
                 qdrant_client::qdrant::point_id::PointIdOptions::Num(num) => *num as u32,
-                _ => 0
+                _ => 0,
             }
-        }).collect();
+        })
+        .collect();
 
-
-
-    let user_idx = user_encoder.encode(&query.user_id).ok_or(AppError::Anyhow(anyhow::anyhow!("User not found.")))?;
+    let user_idx = user_encoder
+        .encode(&query.user_id)
+        .ok_or(AppError::Anyhow(anyhow::anyhow!("User not found.")))?;
     let n_items = candidates.len();
 
     let user_indices: Vec<u32> = vec![user_idx as u32; n_items];
@@ -353,21 +375,28 @@ async fn hybrid_recommendation(
     let user_input = Tensor::from_vec(user_indices, n_items, device)?;
     let item_input = Tensor::from_vec(item_indices, n_items, device)?;
 
-    let scores = ranking_model.forward(&user_input, &item_input)?.to_vec1::<f32>()?;
-    let mut scored_items: Vec<(usize, f32)> = scores.iter().enumerate().map(|(i, &s)| (i,s)).collect();
+    let scores = ranking_model
+        .forward(&user_input, &item_input)?
+        .to_vec1::<f32>()?;
+    let mut scored_items: Vec<(usize, f32)> =
+        scores.iter().enumerate().map(|(i, &s)| (i, s)).collect();
     scored_items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
     let mut results = Vec::new();
     for (idx, score) in scored_items.iter().take(query.limit as usize) {
         let real_ids = candidate_ids[*idx];
-        let original_id = item_encoder.decode(real_ids as usize)
+        let original_id = item_encoder
+            .decode(real_ids as usize)
             .ok_or(AppError::Anyhow(anyhow::anyhow!("Item ID decode error")))?;
 
-        let title = id2title.get(original_id).map(|s| s.as_str()).unwrap_or("Unknown Title");
+        let title = id2title
+            .get(original_id)
+            .map(|s| s.as_str())
+            .unwrap_or("Unknown Title");
         results.push(RecommendationResult {
             score: *score as f64,
             title: title.to_string(),
-            item_id: original_id.to_string()
+            item_id: original_id.to_string(),
         })
     }
     Ok(Json(results))
@@ -379,7 +408,11 @@ async fn main() -> anyhow::Result<()> {
     let device = Device::new_metal(0)?; // Device::new_metal(0).unwrap_or(Device::Cpu);
     match args.command {
         Commands::Train {
-            learning_rate, epochs, embedding_dims, batch_size, lambda_
+            learning_rate,
+            epochs,
+            embedding_dims,
+            batch_size,
+            lambda_,
         } => {
             println!("--- Training Mode ---");
             let config = TrainingConfig {
@@ -390,36 +423,54 @@ async fn main() -> anyhow::Result<()> {
                 lambda_,
             };
 
-            let (train_dataset, test_dataset, user_encoder, item_encoder) = prepare_data(&args.ratings_path, &device)?;
-            let model = train_model(&config, &train_dataset, &test_dataset, &user_encoder, &item_encoder, &device)?;
+            let (train_dataset, test_dataset, user_encoder, item_encoder) =
+                prepare_data(&args.ratings_path, &device)?;
+            let model = train_model(
+                &config,
+                &train_dataset,
+                &test_dataset,
+                &user_encoder,
+                &item_encoder,
+                &device,
+            )?;
         }
         Commands::Search { query } => {
             println!("--- Search Mode ---");
             println!("Query: {}", query);
             let target_user_id = "1";
             let vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(&["model.safetensors"], candle_core::DType::F32, &device)?
+                VarBuilder::from_mmaped_safetensors(
+                    &["model.safetensors"],
+                    candle_core::DType::F32,
+                    &device,
+                )?
             };
 
             let user_encoder = IdEncoder::load("user_encoder.json")?;
             let item_encoder = IdEncoder::load("item_encoder.json")?;
-            let model = CollaborativeFilteringModel::new(
-                vb,
-                user_encoder.len(),
-                item_encoder.len(),
-                32,
-            )?;
+            let model =
+                CollaborativeFilteringModel::new(vb, user_encoder.len(), item_encoder.len(), 32)?;
 
             let candidates = search_movie(100, &query).await?;
-            let candidate_ids: Vec<u32> = candidates.iter()
+            let candidate_ids: Vec<u32> = candidates
+                .iter()
                 .map(|point| {
-                    match point.id.as_ref().unwrap().point_id_options.as_ref().unwrap() {
+                    match point
+                        .id
+                        .as_ref()
+                        .unwrap()
+                        .point_id_options
+                        .as_ref()
+                        .unwrap()
+                    {
                         qdrant_client::qdrant::point_id::PointIdOptions::Num(num) => *num as u32,
-                        _ => 0
+                        _ => 0,
                     }
-                }).collect();
+                })
+                .collect();
 
-            let id2title = read_movie("data/movielens_small/movies.csv").expect("Movieファイルを読み込めませんでした");
+            let id2title = read_movie("data/movielens_small/movies.csv")
+                .expect("Movieファイルを読み込めませんでした");
             let test_user_id = "1";
 
             if let Some(user_idx) = user_encoder.encode(test_user_id) {
@@ -438,10 +489,8 @@ async fn main() -> anyhow::Result<()> {
 
                 // スコアとアイテムIDをペアにソート
                 // (index, score)の形にする
-                let mut scored_items: Vec<(usize, f32)> = scores.iter()
-                    .enumerate()
-                    .map(|(i, &s)| (i, s))
-                    .collect();
+                let mut scored_items: Vec<(usize, f32)> =
+                    scores.iter().enumerate().map(|(i, &s)| (i, s)).collect();
 
                 scored_items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
@@ -451,7 +500,10 @@ async fn main() -> anyhow::Result<()> {
                     let real_ids = candidate_ids[*idx];
                     let original_id = item_encoder.decode(real_ids as usize).unwrap();
 
-                    let title = id2title.get(original_id).map(|s| s.as_str()).unwrap_or("Unknown Title");
+                    let title = id2title
+                        .get(original_id)
+                        .map(|s| s.as_str())
+                        .unwrap_or("Unknown Title");
                     println!("Score: {:.4} | {}", score, title);
                 }
             } else {
@@ -472,7 +524,6 @@ async fn main() -> anyhow::Result<()> {
             let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
             println!("serverの起動開始");
             axum::serve(listener, app).await?;
-
         }
     }
 
@@ -506,4 +557,3 @@ mod tests {
         Ok(())
     }
 }
-
