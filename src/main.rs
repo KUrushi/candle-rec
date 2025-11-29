@@ -1,12 +1,24 @@
 use std::collections::HashMap;
+use axum::response::{IntoResponse, Json, Response};
+use axum::{extract::{State, Query}};
+use axum::{routing::get, Router};
 use std::path::PathBuf;
-use candle_core::{DType, Device, Tensor};
+use std::sync::Arc;
+use axum::http::StatusCode;
+use clap::{Arg, Command, Parser, Subcommand};
+use candle_core::{DType, Device, Module, Tensor};
 use types::Interaction;
 use candle_nn::{VarBuilder, VarMap, SGD, Optimizer};
 use candle_nn::loss::mse;
+use qdrant_client::Qdrant;
+use qdrant_client::qdrant::ScoredPoint;
+use serde::Deserialize;
+use crate::bert::BertEncoder;
 use crate::cf_model::CollaborativeFilteringModel;
 use crate::datasets::{split_data, DataLoader, IdEncoder, TensorDataset};
+use crate::server::{AppState, RecommendQuery, RecommendationResult};
 use crate::types::Movie;
+use crate::vector_store::search_movies;
 
 mod types;
 mod recommenders;
@@ -14,6 +26,10 @@ mod metrics;
 mod cf_model;
 mod loss;
 mod datasets;
+mod bert;
+
+mod vector_store;
+mod server;
 
 fn read_interactions(path: &str) -> Result<Vec<Interaction>, Box<dyn std::error::Error>> {
     let mut data = csv::Reader::from_path(PathBuf::from(path)).expect("ファイルパスが開けませんでした");
@@ -32,36 +48,37 @@ fn read_movie(path: &str) -> Result<HashMap<String, String>, Box<dyn std::error:
     Ok(mapper)
 }
 
-// fn train(user_ids: &Tensor,
-//          item_ids: &Tensor,
-//          ratings: &Tensor) -> candle_core::Result<()> {
-//     let varmap = VarMap::new();
-//     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &Device::Cpu);
-//
-//     let model = CollaborativeFilteringModel::new(
-//         vb.clone(),
-//         1,
-//         1,
-//         10,
-//     )?;
-//
-//     let mut opt = SGD::new(varmap.all_vars(), 0.01)?;
-//     for step in 0..100{
-//         let ys = model.forward(user_ids, item_ids)?;
-//         let loss = mse(&ys, ratings)?;
-//         opt.backward_step(&loss)?
-//     }
-//     Ok(())
-// }
-fn main() -> anyhow::Result<()> {
-    let path = "data/movielens_small/ratings.csv";
-    let embedding_dim = 32;
-    let learning_rate = 0.5;
-    let batch_size = 64;
-    let epochs = 50usize;
-    let device = Device::Cpu;
-    let lambda_ = 0.0001;
+fn precompute_embeddings(
+    item_encoder: &IdEncoder,
+    id2title: &HashMap<String, String>,
+    bert: &BertEncoder,
+    batch_size: usize,
+) -> anyhow::Result<Tensor> {
+    let n_items = item_encoder.len();
+    let mut all_embeddings = Vec::new();
 
+    let mut titles = Vec::new();
+    for i in 0..n_items {
+        let item_id = item_encoder.decode(i).unwrap_or("Unknown");
+        let title = id2title.get(item_id)
+            .cloned()
+            .unwrap_or_else(|| "Unknown".to_string());
+        titles.push(title.clone());
+    }
+
+    // 2. バッチごとに処理する
+    for batch_titles in titles.chunks(batch_size) {
+        let batch_vec = batch_titles.to_vec();
+        let embedding = bert.encode(batch_vec)?;
+        all_embeddings.push(embedding);
+    }
+    Tensor::cat(&all_embeddings, 0).map_err(|e| anyhow::anyhow!(e))
+}
+
+async fn load_movies() -> anyhow::Result<()> {
+    let device = Device::new_metal(0)?;
+
+    let path = "data/movielens_small/ratings.csv";
     println!("Loading data from {path}");
 
     let all_interactions = read_interactions(path).expect("データが読めませんでした");
@@ -80,8 +97,140 @@ fn main() -> anyhow::Result<()> {
     let train_dataset = TensorDataset::new(&train_data, &user_encoder, &item_encoder, &device)?;
     let test_dataset = TensorDataset::new(&test_data, &user_encoder, &item_encoder, &device)?;
 
+    println!("--- Content-based Recommendation ---");
 
-    // 3. モデル構築
+    println!("Loading BERT model...");
+    let bert = BertEncoder::new(&device)?;
+
+    println!("Generating embeddings for {} movies...", item_encoder.len());
+    let id2title = read_movie("data/movielens_small/movies.csv").expect("Movieファイルを読み込めませんでした");
+    let item_embeddings = precompute_embeddings(
+        &item_encoder,
+        &id2title,
+        &bert,
+        32,
+    )?;
+    println!("Embedding shape: {:?}", item_embeddings.shape());
+
+    println!("--- Vector Search with Qdrant ---");
+
+    let qdrant_url = "http://localhost:6334";
+    let qdrant_client = vector_store::init_qdrant(qdrant_url).await?;
+
+    vector_store::upsert_movies(
+        &qdrant_client,
+        &item_encoder,
+        &id2title,
+        &item_embeddings,
+    ).await?;
+    Ok(())
+}
+
+async fn search_movie(limit: u32, query_text: &str) -> anyhow::Result<Vec<ScoredPoint>> {
+    // load_qdrant().await?;
+    let device = Device::new_metal(0)?;
+
+    let path = "data/movielens_small/ratings.csv";
+    println!("Loading data from {path}");
+
+    let all_interactions = read_interactions(path).expect("データが読めませんでした");
+    println!("Total interactions: {}", all_interactions.len());
+
+
+    // Encoderの作成 (学習データに含まれるIDのみを知っている状態にする)
+    let user_encoder = IdEncoder::new(all_interactions.iter().map(|x| &x.user_id));
+    let item_encoder = IdEncoder::new(all_interactions.iter().map(|x| &x.item_id));
+
+    println!("Users: {}, Items: {}", user_encoder.len(), item_encoder.len());
+
+    println!("Loading BERT model...");
+    let bert = BertEncoder::new(&device)?;
+
+    println!("\nQuery: \"{}\"", query_text);
+
+    let query_embedding = bert.encode(vec![query_text.to_string()])?;
+
+    let query_vector = query_embedding.to_vec2::<f32>()?[0].clone();
+
+    let qdrant_url = "http://localhost:6334";
+    let qdrant_client = Qdrant::from_url(qdrant_url).build().expect("Failed to create Qdrant client");
+    let result = vector_store::search_movies(&qdrant_client, query_vector, 100).await?;
+    Ok(result)
+}
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(long, default_value = "data/movielens_small/ratings.csv")]
+    ratings_path: String,
+
+    #[arg(long, default_value = "data/movielens_small/movies.csv")]
+    movies_path: String,
+
+    #[arg(long, default_value = "http://localhost:6334")]
+    qdrant_url: String,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// MFモデルの学習のパラメータ
+    Train {
+        #[arg(long, default_value_t = 0.5)]
+        learning_rate: f64,
+
+        #[arg(long, default_value_t = 50)]
+        epochs: usize,
+
+        #[arg(long, default_value_t = 32)]
+        embedding_dims: usize,
+
+        #[arg(long, default_value_t = 64)]
+        batch_size: usize,
+
+        #[arg(long, default_value_t = 0.0001)]
+        lambda_: f64,
+    },
+    /// キーワードで映画を検索
+    Search {
+        #[arg(short, long)]
+        query: String
+    },
+    Server,
+}
+
+#[derive(Debug, Clone)]
+struct TrainingConfig {
+    pub learning_rate: f64,
+    pub epochs: usize,
+    pub embedding_dims: usize,
+    pub batch_size: usize,
+    pub lambda_: f64,
+}
+
+fn prepare_data(rating_path: &str, device: &Device) -> anyhow::Result<(TensorDataset, TensorDataset, IdEncoder, IdEncoder)> {
+    println!("Loading data from {rating_path}");
+
+    let all_interactions = read_interactions(rating_path).expect("データが読めませんでした");
+    println!("Total interactions: {}", all_interactions.len());
+
+    let (train_data, test_data) = split_data(all_interactions, 0.8);
+    println!("Train: {}, Test: {}", train_data.len(), test_data.len());
+
+    // Encoderの作成 (学習データに含まれるIDのみを知っている状態にする)
+    let user_encoder = IdEncoder::new(train_data.iter().map(|x| &x.user_id));
+    let item_encoder = IdEncoder::new(train_data.iter().map(|x| &x.item_id));
+
+
+    let train_dataset = TensorDataset::new(&train_data, &user_encoder, &item_encoder, &device)?;
+    let test_dataset = TensorDataset::new(&test_data, &user_encoder, &item_encoder, &device)?;
+    Ok((train_dataset, test_dataset, user_encoder, item_encoder))
+}
+
+fn train_model(config: &TrainingConfig, train_dataset: &TensorDataset, test_dataset: &TensorDataset, user_encoder: &IdEncoder,
+               item_encoder: &IdEncoder, device: &Device) -> anyhow::Result<CollaborativeFilteringModel> {
     let varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, candle_core::DType::F32, &device);
 
@@ -89,19 +238,19 @@ fn main() -> anyhow::Result<()> {
         vb,
         user_encoder.len(),
         item_encoder.len(),
-        embedding_dim,
+        config.embedding_dims,
     )?;
 
-    let mut opt = SGD::new(varmap.all_vars(), learning_rate)?;
+    let mut opt = SGD::new(varmap.all_vars(), config.learning_rate)?;
 
     println!("Start training...");
 
 
-    for epoch in 1..=epochs {
+    for epoch in 1..=config.epochs {
         let mut total_train_loss = 0.0;
         let mut train_steps = 0;
 
-        let train_loader = DataLoader::new(train_dataset.clone(), batch_size);
+        let train_loader = DataLoader::new(train_dataset.clone(), config.batch_size);
         for (u, i, r) in train_loader {
             let logits = model.forward(&u, &i)?;
             let mut loss = mse(&logits, &r)?;
@@ -110,7 +259,7 @@ fn main() -> anyhow::Result<()> {
             for var in varmap.all_vars() {
                 l2_reg = (l2_reg + var.sqr()?.sum_all()?)?;
             }
-            loss = (loss + (l2_reg * lambda_)?)?;
+            loss = (loss + (l2_reg * config.lambda_)?)?;
 
             opt.backward_step(&loss)?;
             total_train_loss += loss.to_scalar::<f32>()?;
@@ -120,7 +269,7 @@ fn main() -> anyhow::Result<()> {
         let mut total_test_loss = 0.0;
         let mut test_steps = 0;
 
-        let test_loader = DataLoader::new(test_dataset.clone(), batch_size);
+        let test_loader = DataLoader::new(test_dataset.clone(), config.batch_size);
         for (u, i, r) in test_loader {
             let logits = model.forward(&u, &i)?;
             let loss = mse(&logits, &r)?;
@@ -136,43 +285,198 @@ fn main() -> anyhow::Result<()> {
             epoch, avg_train_loss, avg_test_loss,
         );
     }
-
-    let id2title = read_movie("data/movielens_small/movies.csv").expect("Movieファイルを読み込めませんでした");
-    let test_user_id = "1";
-
-    if let Some(user_idx) = user_encoder.encode(test_user_id) {
-        println!("Generating recommendations for User: {}", test_user_id);
-
-        // 全アイテムに対して予測を行うためのn湯力データを作成
-        let n_items = item_encoder.len();
-
-        let user_indices: Vec<u32> = vec![user_idx as u32; n_items];
-        let item_indices: Vec<u32> = (0..n_items as u32).collect();
-
-        let user_input = Tensor::from_vec(user_indices, n_items, &device)?;
-        let item_input = Tensor::from_vec(item_indices, n_items, &device)?;
-
-        let scores = model.forward(&user_input, &item_input)?.to_vec1::<f32>()?;
-
-        // スコアとアイテムIDをペアにソート
-        // (index, score)の形にする
-        let mut scored_items: Vec<(usize, f32)> = scores.iter()
-            .enumerate()
-            .map(|(i, &s)| (i, s))
-            .collect();
-
-        scored_items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-        println!("--- Top 10 Recommended Movies ---");
-        for (idx, score) in scored_items.iter().take(10) {
-            // 数値ID -> 元の映画ID
-            let original_id = item_encoder.decode(*idx).unwrap();
-            let title = id2title.get(original_id).map(|s| s.as_str()).unwrap_or("Unknown Title");
-            println!("Score: {:.4} | {}", score, title);
-        }
-    } else {
-        println!("User {} not found in training data.", test_user_id);
+    varmap.save("model.safetensors").expect("重みの保存に失敗しました");
+    user_encoder.save("user_encoder.json")?;
+    item_encoder.save("item_encoder.json")?;
+    Ok(model)
+}
+#[derive(Debug)]
+pub enum AppError {
+    Anyhow(anyhow::Error)
+}
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        (StatusCode::INTERNAL_SERVER_ERROR, "Internal ServerError").into_response()
     }
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(inner: anyhow::Error) -> Self {
+        AppError::Anyhow(inner)
+    }
+}
+impl From<candle_core::Error> for AppError {
+    fn from(inner: candle_core::Error) -> Self {
+        // Candleのエラーを Anyhow 経由で AppError に格納
+        AppError::Anyhow(anyhow::Error::new(inner))
+    }
+}
+
+async fn hybrid_recommendation(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<RecommendQuery>,
+) -> std::result::Result<Json<Vec<RecommendationResult>>, AppError> {
+    let item_encoder  = &state.item_encoder;
+    let user_encoder = &state.user_encoder;
+
+    let id2title = &state.id2title;
+    let qdrant_client = &state.qdrant_client;
+    let embedding_model = &state.embedding_model;
+    let ranking_model = &state.ranking_model;
+
+    let device = ranking_model.device()?;
+    let query_text = query.query.clone();
+    let query_embedding = embedding_model.encode(vec![query_text])?;
+
+    let query_vector = query_embedding.to_vec2::<f32>()?[0].clone();
+
+    let candidates = vector_store::search_movies(
+        qdrant_client, query_vector, query.limit as u64,
+    ).await?;
+
+    // 候補の内部IDを抽出 (U32)
+    let candidate_ids: Vec<u32> = candidates.iter()
+        .map(|point| {
+            match point.id.as_ref().unwrap().point_id_options.as_ref().unwrap() {
+                qdrant_client::qdrant::point_id::PointIdOptions::Num(num) => *num as u32,
+                _ => 0
+            }
+        }).collect();
+
+
+
+    let user_idx = user_encoder.encode(&query.user_id).ok_or(AppError::Anyhow(anyhow::anyhow!("User not found.")))?;
+    let n_items = candidates.len();
+
+    let user_indices: Vec<u32> = vec![user_idx as u32; n_items];
+    let item_indices: Vec<u32> = candidate_ids.clone();
+
+    let user_input = Tensor::from_vec(user_indices, n_items, device)?;
+    let item_input = Tensor::from_vec(item_indices, n_items, device)?;
+
+    let scores = ranking_model.forward(&user_input, &item_input)?.to_vec1::<f32>()?;
+    let mut scored_items: Vec<(usize, f32)> = scores.iter().enumerate().map(|(i, &s)| (i,s)).collect();
+    scored_items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let mut results = Vec::new();
+    for (idx, score) in scored_items.iter().take(query.limit as usize) {
+        let real_ids = candidate_ids[*idx];
+        let original_id = item_encoder.decode(real_ids as usize)
+            .ok_or(AppError::Anyhow(anyhow::anyhow!("Item ID decode error")))?;
+
+        let title = id2title.get(original_id).map(|s| s.as_str()).unwrap_or("Unknown Title");
+        results.push(RecommendationResult {
+            score: *score as f64,
+            title: title.to_string(),
+            item_id: original_id.to_string()
+        })
+    }
+    Ok(Json(results))
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+    let device = Device::new_metal(0)?; // Device::new_metal(0).unwrap_or(Device::Cpu);
+    match args.command {
+        Commands::Train {
+            learning_rate, epochs, embedding_dims, batch_size, lambda_
+        } => {
+            println!("--- Training Mode ---");
+            let config = TrainingConfig {
+                learning_rate,
+                epochs,
+                embedding_dims,
+                batch_size,
+                lambda_,
+            };
+
+            let (train_dataset, test_dataset, user_encoder, item_encoder) = prepare_data(&args.ratings_path, &device)?;
+            let model = train_model(&config, &train_dataset, &test_dataset, &user_encoder, &item_encoder, &device)?;
+        }
+        Commands::Search { query } => {
+            println!("--- Search Mode ---");
+            println!("Query: {}", query);
+            let target_user_id = "1";
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&["model.safetensors"], candle_core::DType::F32, &device)?
+            };
+
+            let user_encoder = IdEncoder::load("user_encoder.json")?;
+            let item_encoder = IdEncoder::load("item_encoder.json")?;
+            let model = CollaborativeFilteringModel::new(
+                vb,
+                user_encoder.len(),
+                item_encoder.len(),
+                32,
+            )?;
+
+            let candidates = search_movie(100, &query).await?;
+            let candidate_ids: Vec<u32> = candidates.iter()
+                .map(|point| {
+                    match point.id.as_ref().unwrap().point_id_options.as_ref().unwrap() {
+                        qdrant_client::qdrant::point_id::PointIdOptions::Num(num) => *num as u32,
+                        _ => 0
+                    }
+                }).collect();
+
+            let id2title = read_movie("data/movielens_small/movies.csv").expect("Movieファイルを読み込めませんでした");
+            let test_user_id = "1";
+
+            if let Some(user_idx) = user_encoder.encode(test_user_id) {
+                println!("Generating recommendations for User: {}", test_user_id);
+
+                // 全アイテムに対して予測を行うためのn湯力データを作成
+                let n_items = candidates.len();
+
+                let user_indices: Vec<u32> = vec![user_idx as u32; n_items];
+                let item_indices: Vec<u32> = candidate_ids.clone();
+
+                let user_input = Tensor::from_vec(user_indices, n_items, &device)?;
+                let item_input = Tensor::from_vec(item_indices, n_items, &device)?;
+
+                let scores = model.forward(&user_input, &item_input)?.to_vec1::<f32>()?;
+
+                // スコアとアイテムIDをペアにソート
+                // (index, score)の形にする
+                let mut scored_items: Vec<(usize, f32)> = scores.iter()
+                    .enumerate()
+                    .map(|(i, &s)| (i, s))
+                    .collect();
+
+                scored_items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+                println!("--- Top 10 Recommended Movies ---");
+                for (idx, score) in scored_items.iter().take(10) {
+                    // 数値ID -> 元の映画ID
+                    let real_ids = candidate_ids[*idx];
+                    let original_id = item_encoder.decode(real_ids as usize).unwrap();
+
+                    let title = id2title.get(original_id).map(|s| s.as_str()).unwrap_or("Unknown Title");
+                    println!("Score: {:.4} | {}", score, title);
+                }
+            } else {
+                println!("User {} not found in training data.", test_user_id);
+            }
+        }
+        Commands::Server => {
+            println!("--- Server Mode: Staring on 0.0.0.0:3000");
+
+            let app_state = AppState::load(&args, &device)?;
+            let shared_state = Arc::new(app_state);
+
+            println!("Stateの読み込み完了");
+            let app = Router::new()
+                .route("/recommend", get(hybrid_recommendation))
+                .with_state(shared_state);
+
+            let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+            println!("serverの起動開始");
+            axum::serve(listener, app).await?;
+
+        }
+    }
+
     Ok(())
 }
 

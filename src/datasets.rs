@@ -1,9 +1,11 @@
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use candle_core::{Tensor, Device};
+use serde::{Serialize, Deserialize};
 use crate::types::Interaction;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IdEncoder {
     map: HashMap<String, usize>,
     reverse_map: HashMap<usize, String>
@@ -35,6 +37,19 @@ impl IdEncoder {
 
     pub fn len(&self) -> usize {
         self.map.len()
+    }
+
+    pub fn save(&self, path: &str) -> anyhow::Result<()> {
+        let json_string = serde_json::to_string(self)?;
+        let path = PathBuf::from(path);
+        std::fs::write(path, json_string)?;
+        Ok(())
+    }
+
+    pub fn load(path: &str) -> anyhow::Result<Self> {
+        let json_string = std::fs::read_to_string(path)?;
+        let instance = serde_json::from_str(json_string.as_str())?;
+        Ok(instance)
     }
 }
 

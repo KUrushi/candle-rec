@@ -1,5 +1,5 @@
 use candle_nn::{embedding, Embedding, VarBuilder};
-use candle_core::{Tensor, Result, Module};
+use candle_core::{Tensor, Result, Module, Device};
 
 pub struct CollaborativeFilteringModel {
     user_embeddings: Embedding,
@@ -31,12 +31,15 @@ impl CollaborativeFilteringModel {
         let ratings = (user_embeddings * item_embeddings)?;
         ratings.sum(1)
     }
+    pub fn device(&self) -> Result<&Device> {
+        Ok(self.user_embeddings.embeddings().device())
+    }
 }
 
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
-    use candle_core::DType;
+    use candle_core::{DType, Device};
     use candle_nn::{embedding, VarMap};
     use super::*;
 
