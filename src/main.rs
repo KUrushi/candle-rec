@@ -230,8 +230,8 @@ fn prepare_data(
     let user_encoder = IdEncoder::new(train_data.iter().map(|x| &x.user_id));
     let item_encoder = IdEncoder::new(train_data.iter().map(|x| &x.item_id));
 
-    let train_dataset = TensorDataset::new(&train_data, &user_encoder, &item_encoder, &device)?;
-    let test_dataset = TensorDataset::new(&test_data, &user_encoder, &item_encoder, &device)?;
+    let train_dataset = TensorDataset::new(&train_data, &user_encoder, &item_encoder, device)?;
+    let test_dataset = TensorDataset::new(&test_data, &user_encoder, &item_encoder, device)?;
     Ok((train_dataset, test_dataset, user_encoder, item_encoder))
 }
 
@@ -244,7 +244,7 @@ fn train_model(
     device: &Device,
 ) -> anyhow::Result<CollaborativeFilteringModel> {
     let varmap = VarMap::new();
-    let vb = VarBuilder::from_varmap(&varmap, candle_core::DType::F32, &device);
+    let vb = VarBuilder::from_varmap(&varmap, candle_core::DType::F32, device);
 
     let model = CollaborativeFilteringModel::new(
         vb,
@@ -265,7 +265,7 @@ fn train_model(
         for (u, i, r) in train_loader {
             let logits = model.forward(&u, &i)?;
             let mut loss = mse(&logits, &r)?;
-            let mut l2_reg = Tensor::zeros((), DType::F32, &device)?;
+            let mut l2_reg = Tensor::zeros((), DType::F32, device)?;
 
             for var in varmap.all_vars() {
                 l2_reg = (l2_reg + var.sqr()?.sum_all()?)?;
@@ -383,7 +383,7 @@ async fn hybrid_recommendation(
     scored_items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
     let mut results = Vec::new();
-    for (idx, score) in scored_items.iter().take(query.limit as usize) {
+    for (idx, score) in scored_items.iter().take(query.limit) {
         let real_ids = candidate_ids[*idx];
         let original_id = item_encoder
             .decode(real_ids as usize)

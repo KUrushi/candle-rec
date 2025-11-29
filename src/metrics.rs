@@ -1,5 +1,5 @@
 pub fn calculate_precision(predictions: Vec<String>, labels: Vec<String>) -> f32 {
-    if predictions.len() == 0 {
+    if predictions.is_empty() {
         return 0.0;
     }
     let mut correct = 0_usize;
