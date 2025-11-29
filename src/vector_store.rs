@@ -27,8 +27,7 @@ pub async fn init_qdrant(url: &str) -> Result<Qdrant> {
 
     println!("Creating collection '{}'...", COLLECTION_NAME);
 
-    // 【修正点】 & を削除しました
-    let result = client
+    let _ = client
         .create_collection(CreateCollection {
             collection_name: COLLECTION_NAME.to_string(),
             vectors_config: Some(VectorsConfig {
@@ -41,7 +40,7 @@ pub async fn init_qdrant(url: &str) -> Result<Qdrant> {
             }),
             ..Default::default()
         })
-        .await?; // unwrap() ではなく ? を使うとエラーハンドリングが綺麗になります
+        .await?;
 
     Ok(client)
 }

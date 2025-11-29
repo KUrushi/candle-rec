@@ -13,7 +13,6 @@ use candle_nn::{Optimizer, SGD, VarBuilder, VarMap};
 use clap::{Parser, Subcommand};
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::ScoredPoint;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -102,9 +101,6 @@ async fn load_movies() -> anyhow::Result<()> {
     );
 
     // Datasetの作成
-    let train_dataset = TensorDataset::new(&train_data, &user_encoder, &item_encoder, &device)?;
-    let test_dataset = TensorDataset::new(&test_data, &user_encoder, &item_encoder, &device)?;
-
     println!("--- Content-based Recommendation ---");
 
     println!("Loading BERT model...");
@@ -125,7 +121,7 @@ async fn load_movies() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn search_movie(limit: u32, query_text: &str) -> anyhow::Result<Vec<ScoredPoint>> {
+async fn search_movie(limit: u64, query_text: &str) -> anyhow::Result<Vec<ScoredPoint>> {
     // load_qdrant().await?;
     let device = Device::new_metal(0)?;
 
@@ -158,7 +154,7 @@ async fn search_movie(limit: u32, query_text: &str) -> anyhow::Result<Vec<Scored
     let qdrant_client = Qdrant::from_url(qdrant_url)
         .build()
         .expect("Failed to create Qdrant client");
-    let result = vector_store::search_movies(&qdrant_client, query_vector, 100).await?;
+    let result = vector_store::search_movies(&qdrant_client, query_vector, limit).await?;
     Ok(result)
 }
 
@@ -425,7 +421,7 @@ async fn main() -> anyhow::Result<()> {
 
             let (train_dataset, test_dataset, user_encoder, item_encoder) =
                 prepare_data(&args.ratings_path, &device)?;
-            let model = train_model(
+            let _model = train_model(
                 &config,
                 &train_dataset,
                 &test_dataset,
@@ -471,10 +467,9 @@ async fn main() -> anyhow::Result<()> {
 
             let id2title = read_movie("data/movielens_small/movies.csv")
                 .expect("Movieファイルを読み込めませんでした");
-            let test_user_id = "1";
 
-            if let Some(user_idx) = user_encoder.encode(test_user_id) {
-                println!("Generating recommendations for User: {}", test_user_id);
+            if let Some(user_idx) = user_encoder.encode(target_user_id) {
+                println!("Generating recommendations for User: {}", target_user_id);
 
                 // 全アイテムに対して予測を行うためのn湯力データを作成
                 let n_items = candidates.len();
@@ -507,7 +502,7 @@ async fn main() -> anyhow::Result<()> {
                     println!("Score: {:.4} | {}", score, title);
                 }
             } else {
-                println!("User {} not found in training data.", test_user_id);
+                println!("User {} not found in training data.", target_user_id);
             }
         }
         Commands::Server => {
