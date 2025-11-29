@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use candle_core::Device;
 use candle_nn::VarBuilder;
 use qdrant_client::Qdrant;
 use serde::{Deserialize, Serialize};

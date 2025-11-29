@@ -5,7 +5,7 @@ use axum::{routing::get, Router};
 use std::path::PathBuf;
 use std::sync::Arc;
 use axum::http::StatusCode;
-use clap::{Arg, Command, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use candle_core::{DType, Device, Module, Tensor};
 use types::Interaction;
 use candle_nn::{VarBuilder, VarMap, SGD, Optimizer};
@@ -18,7 +18,6 @@ use crate::cf_model::CollaborativeFilteringModel;
 use crate::datasets::{split_data, DataLoader, IdEncoder, TensorDataset};
 use crate::server::{AppState, RecommendQuery, RecommendationResult};
 use crate::types::Movie;
-use crate::vector_store::search_movies;
 
 mod types;
 mod recommenders;

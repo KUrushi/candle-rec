@@ -6,8 +6,8 @@ use qdrant_client::Qdrant; // Clientの名前が変わっている場合があ�
 // もし qdrant-client 1.16系なら Qdrant ではなく QdrantClient かもしれません。
 // エラーが出なければそのままでOKです。
 use qdrant_client::qdrant::vectors_config::Config;
-use qdrant_client::qdrant::{CreateCollection, Distance, PointStruct, UpsertPointsBuilder, VectorParams, VectorsConfig, SearchPointsBuilder, Value, ScoredPoint};
-use serde_json::{json, to_string};
+use qdrant_client::qdrant::{CreateCollection, Distance, PointStruct, UpsertPointsBuilder, VectorParams, VectorsConfig, SearchPointsBuilder, ScoredPoint};
+use serde_json::json;
 use crate::datasets::IdEncoder;
 
 pub const COLLECTION_NAME: &str = "movies";

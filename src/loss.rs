@@ -1,4 +1,3 @@
-use std::io::stderr;
 use candle_core::{Tensor, Result};
 fn mse(labels: &Tensor, predictions: &Tensor) -> Result<Tensor> {
     (labels-predictions)?.sqr()?.mean_all()

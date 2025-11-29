@@ -1,7 +1,6 @@
 use anyhow::Result;
 use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
-use serde::Deserialize;
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use candle_transformers::models::bert::{BertModel, Config};
 
