@@ -1,8 +1,9 @@
 use crate::bert::BertEncoder;
 use crate::cf_model::CollaborativeFilteringModel;
 use crate::datasets::{DataLoader, IdEncoder, TensorDataset, split_data};
-use crate::server::{AppState, RecommendQuery, RecommendationResult};
+use crate::server::{AppError, AppState, RecommendQuery, RecommendationResult};
 use crate::types::Movie;
+use anyhow::Context;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
@@ -16,6 +17,7 @@ use qdrant_client::qdrant::ScoredPoint;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::info;
 use types::Interaction;
 
 mod bert;
@@ -299,27 +301,7 @@ fn train_model(
     item_encoder.save("item_encoder.json")?;
     Ok(model)
 }
-#[derive(Debug)]
-pub enum AppError {
-    Anyhow(anyhow::Error),
-}
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        (StatusCode::INTERNAL_SERVER_ERROR, "Internal ServerError").into_response()
-    }
-}
 
-impl From<anyhow::Error> for AppError {
-    fn from(inner: anyhow::Error) -> Self {
-        AppError::Anyhow(inner)
-    }
-}
-impl From<candle_core::Error> for AppError {
-    fn from(inner: candle_core::Error) -> Self {
-        // Candleのエラーを Anyhow 経由で AppError に格納
-        AppError::Anyhow(anyhow::Error::new(inner))
-    }
-}
 
 async fn hybrid_recommendation(
     State(state): State<Arc<AppState>>,
@@ -333,11 +315,11 @@ async fn hybrid_recommendation(
     let embedding_model = &state.embedding_model;
     let ranking_model = &state.ranking_model;
 
-    let device = ranking_model.device()?;
+    let device = ranking_model.device().context("Cannot get device")?;
     let query_text = query.query.clone();
-    let query_embedding = embedding_model.encode(vec![query_text])?;
+    let query_embedding = embedding_model.encode(vec![query_text]).context("Embedding generated failed")?;
 
-    let query_vector = query_embedding.to_vec2::<f32>()?[0].clone();
+    let query_vector = query_embedding.to_vec2::<f32>().context("Cannot convert tensor to vec")?[0].clone();
 
     let candidates =
         vector_store::search_movies(qdrant_client, query_vector, query.limit as u64).await?;
@@ -349,41 +331,42 @@ async fn hybrid_recommendation(
             match point
                 .id
                 .as_ref()
-                .unwrap()
+                .context("Cannot get Id")?
                 .point_id_options
                 .as_ref()
-                .unwrap()
+                .context("Cannot get id options")?
             {
-                qdrant_client::qdrant::point_id::PointIdOptions::Num(num) => *num as u32,
-                _ => 0,
+                qdrant_client::qdrant::point_id::PointIdOptions::Num(num) => Ok(*num as u32),
+                _ => Ok(0),
             }
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<u32>>>()?;
 
     let user_idx = user_encoder
         .encode(&query.user_id)
-        .ok_or(AppError::Anyhow(anyhow::anyhow!("User not found.")))?;
+        .ok_or_else(|| AppError::UserNotFound(query.user_id.clone()))?;
     let n_items = candidates.len();
 
     let user_indices: Vec<u32> = vec![user_idx as u32; n_items];
     let item_indices: Vec<u32> = candidate_ids.clone();
 
-    let user_input = Tensor::from_vec(user_indices, n_items, device)?;
-    let item_input = Tensor::from_vec(item_indices, n_items, device)?;
+    let user_input = Tensor::from_vec(user_indices, n_items, device).context("Cannot Generate User Tensor")?;
+    let item_input = Tensor::from_vec(item_indices, n_items, device).context("Cannot Generate Item Tensor")?;
 
     let scores = ranking_model
-        .forward(&user_input, &item_input)?
-        .to_vec1::<f32>()?;
+        .forward(&user_input, &item_input)
+        .context("Model Inference failed")?
+        .to_vec1::<f32>().context("Cannot convert ranking score to vec")?;
     let mut scored_items: Vec<(usize, f32)> =
         scores.iter().enumerate().map(|(i, &s)| (i, s)).collect();
-    scored_items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored_items.sort_by(|a, b| b.1.total_cmp(&a.1));
 
     let mut results = Vec::new();
     for (idx, score) in scored_items.iter().take(query.limit) {
         let real_ids = candidate_ids[*idx];
         let original_id = item_encoder
             .decode(real_ids as usize)
-            .ok_or(AppError::Anyhow(anyhow::anyhow!("Item ID decode error")))?;
+            .context("Cannot decode item _id")?;
 
         let title = id2title
             .get(original_id)
@@ -400,6 +383,7 @@ async fn hybrid_recommendation(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
     let args = Args::parse();
     let device = Device::new_metal(0)?; // Device::new_metal(0).unwrap_or(Device::Cpu);
     match args.command {
@@ -506,7 +490,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Server => {
-            println!("--- Server Mode: Staring on 0.0.0.0:3000");
+            info!("--- Server Mode: Staring on 0.0.0.0:3000");
 
             let app_state = AppState::load(&args, &device)?;
             let shared_state = Arc::new(app_state);

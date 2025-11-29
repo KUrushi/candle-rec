@@ -12,13 +12,15 @@ use qdrant_client::qdrant::{
     VectorParams, VectorsConfig,
 };
 use serde_json::json;
+use tracing::debug;
+use tracing::log::info;
 
 pub const COLLECTION_NAME: &str = "movies";
 
 pub async fn init_qdrant(url: &str) -> Result<Qdrant> {
     let client = Qdrant::from_url(url)
-        .build()
-        .expect("Qdrant was not created");
+        .build()?;
+
 
     if client.collection_exists(COLLECTION_NAME).await? {
         println!("Collection '{}' exists. Deleting...", COLLECTION_NAME);
@@ -87,16 +89,16 @@ pub async fn search_movies(
     query_vector: Vec<f32>,
     limit: u64,
 ) -> Result<Vec<ScoredPoint>> {
-    println!("Searching ...");
+    debug!("Searching ...");
 
     let search_result = client
         .search_points(
             SearchPointsBuilder::new(COLLECTION_NAME, query_vector, limit).with_payload(true),
         )
-        .await
-        .unwrap();
+        .await?;
 
-    println!("Found {} results:", search_result.result.len());
+
+    info!("Found {} results:", search_result.result.len());
 
     let result = search_result.result;
     for point in result.iter() {

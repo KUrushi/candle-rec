@@ -2,10 +2,14 @@ use crate::bert::BertEncoder;
 use crate::cf_model::CollaborativeFilteringModel;
 use crate::datasets::IdEncoder;
 use crate::read_movie;
+use axum::response::{IntoResponse, Response};
+use axum::http::StatusCode;
+use thiserror::Error;
 use candle_nn::VarBuilder;
 use qdrant_client::Qdrant;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use crate::server::AppError::{Unexpected, UserNotFound};
 
 pub struct AppState {
     pub ranking_model: std::sync::Arc<CollaborativeFilteringModel>,
@@ -47,6 +51,7 @@ impl AppState {
         })
     }
 }
+
 #[derive(Deserialize)]
 pub struct RecommendQuery {
     pub user_id: String,
@@ -59,4 +64,33 @@ pub struct RecommendationResult {
     pub score: f64,
     pub title: String,
     pub item_id: String,
+}
+
+#[derive(Error, Debug)]
+pub enum AppError {
+    // 1. 特定したいエラー: ユーザーが見つからない
+    #[error("User not found: {0}")]
+    UserNotFound(String),
+
+    // 2. その他の予期せぬエラー: Anyhowにラップして任せる
+    #[error(transparent)]
+    Unexpected(#[from] anyhow::Error)
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            // ユーザーが見つからない場合
+            AppError::UserNotFound(user_id) => {
+                (StatusCode::NOT_FOUND, format!("User {} not found", user_id))
+            },
+            // 予期せぬエラー (Qdrantが落ちている、バグ)
+            AppError::Unexpected(err) => {
+                tracing::error!("Internal Server Error: {:?}", err) ;
+                (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error".to_string())
+            }
+        };
+        (status, message).into_response()
+
+    }
 }
