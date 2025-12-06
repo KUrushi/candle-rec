@@ -163,14 +163,20 @@ async fn search_movie(limit: u64, query_text: &str) -> anyhow::Result<Vec<Scored
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(long, default_value = "data/movielens_small/ratings.csv")]
+    #[arg(long, env, default_value = "data/movielens_small/ratings.csv")]
     ratings_path: String,
 
-    #[arg(long, default_value = "data/movielens_small/movies.csv")]
+    #[arg(long, env, default_value = "data/movielens_small/movies.csv")]
     movies_path: String,
 
-    #[arg(long, default_value = "http://localhost:6334")]
+    #[arg(long, env, default_value = "http://localhost:6334")]
     qdrant_url: String,
+
+    #[arg(long, env, default_value = "0.0.0.0")]
+    server_host: String,
+
+    #[arg(long, env, default_value_t = 3000)]
+    server_port: u16,
 
     #[command(subcommand)]
     command: Commands,
@@ -200,7 +206,7 @@ enum Commands {
         #[arg(short, long)]
         query: String,
     },
-    Server,
+    Server
 }
 
 #[derive(Debug, Clone)]
@@ -383,7 +389,9 @@ async fn hybrid_recommendation(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
+
     let args = Args::parse();
     let device = Device::new_metal(0)?; // Device::new_metal(0).unwrap_or(Device::Cpu);
     match args.command {
@@ -489,8 +497,11 @@ async fn main() -> anyhow::Result<()> {
                 println!("User {} not found in training data.", target_user_id);
             }
         }
-        Commands::Server => {
-            info!("--- Server Mode: Staring on 0.0.0.0:3000");
+        Commands::Server  => {
+            let host = &args.server_host;
+            let port = args.server_port;
+            let addr = format!("{}:{}", host, port);
+            info!("--- Server Mode: Staring on {}", addr);
 
             let app_state = AppState::load(&args, &device)?;
             let shared_state = Arc::new(app_state);
@@ -500,7 +511,7 @@ async fn main() -> anyhow::Result<()> {
                 .route("/recommend", get(hybrid_recommendation))
                 .with_state(shared_state);
 
-            let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+            let listener = tokio::net::TcpListener::bind(addr).await?;
             println!("serverの起動開始");
             axum::serve(listener, app).await?;
         }
